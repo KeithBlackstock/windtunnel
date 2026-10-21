@@ -260,6 +260,8 @@ def _write_snappy_hex_mesh_dict(location_in_mesh):
                 }}
             }}
 
+            resolveFeatureAngle 30;
+
             refinementRegions {{}}
 
             locationInMesh ({lx} {ly} {lz});
@@ -299,13 +301,14 @@ def _write_snappy_hex_mesh_dict(location_in_mesh):
             nLayerIter              50;
         }}
 
-        #include "meshQualityDict"
+        meshQualityControls
+        {{
+            #include "meshQualityDict"
+        }}
 
         writeFlags
         (
             scalarLevels
-            meshQuality
-            layerInfo
         );
 
         mergeTolerance 1e-6;
