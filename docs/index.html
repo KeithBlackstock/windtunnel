@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Wind Tunnel Case Builder</title>
+<meta name="description" content="Builds the OpenFOAM meshing case for the wind tunnel repository: domain, background cell, refinement levels, model placement." />
+<style>
+  :root{
+    --bg:#080b12;
+    --panel:#0d1220;
+    --panel2:#111829;
+    --ink:#e8eefb;
+    --dim:#8b9cba;
+    --cy:#38bdf8;
+    --ok:#4ade80;
+    --warn:#fbbf24;
+    --line:rgba(120,160,220,.16);
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  a{color:var(--cy);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+  header{position:sticky;top:0;z-index:5;background:rgba(8,11,18,.92);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+  .nav{display:flex;align-items:center;gap:20px;height:58px;font-size:13px}
+  .mark{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink)}
+  .mark b{color:var(--cy);font-weight:600}
+  .nav nav{margin-left:auto;display:flex;gap:22px}
+  .nav nav a{color:var(--dim)}
+  .nav nav a:hover{color:var(--cy);text-decoration:none}
+  h1{font-size:clamp(26px,3.6vw,40px);line-height:1.1;letter-spacing:-.02em;margin:44px 0 10px;font-weight:700}
+  .lede{color:#b6c6e2;font-size:16px;line-height:1.6;max-width:76ch;margin:0 0 8px}
+  h2{font-size:20px;margin:0 0 6px;letter-spacing:-.01em}
+  .kicker{font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--dim);margin:0 0 10px}
+  section{padding:38px 0;border-top:1px solid var(--line)}
+  p{margin:0 0 12px;line-height:1.6;color:#b6c6e2}
+  .grid2{display:grid;grid-template-columns:1.15fr .85fr;gap:28px;align-items:start}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
+  .panel .hd{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--dim);margin-bottom:12px}
+  ul.facts{list-style:none;padding:0;margin:0 0 4px}
+  ul.facts li{position:relative;padding:7px 0 7px 20px;border-bottom:1px solid rgba(120,160,220,.08);font-size:14px;color:#c6d5ee;line-height:1.5}
+  ul.facts li:last-child{border-bottom:0}
+  ul.facts li::before{content:"";position:absolute;left:2px;top:15px;width:6px;height:6px;border-radius:50%;background:var(--cy);opacity:.7}
+  .mono{font-family:var(--mono)}
+  .dim{color:var(--dim)}
+  code{font-family:var(--mono);font-size:13px;background:rgba(56,189,248,.09);padding:1px 6px;border-radius:5px;color:#cfeeff}
+  pre{font-family:var(--mono);font-size:12.5px;line-height:1.55;background:#060910;border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow-x:auto;margin:0 0 10px;color:#d7e6ff}
+  pre .c{color:#5f7392}
+  .copy{float:right;font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);background:transparent;border:1px solid var(--line);border-radius:6px;padding:3px 8px;cursor:pointer}
+  .copy:hover{color:var(--cy);border-color:rgba(56,189,248,.5)}
+  form.mm{display:grid;grid-template-columns:repeat(3,1fr);gap:14px 16px}
+  label{display:block;font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-bottom:5px}
+  input[type=number]{width:100%;background:#060910;border:1px solid var(--line);border-radius:8px;color:var(--ink);font-family:var(--mono);font-size:14px;padding:9px 11px}
+  input[type=number]:focus{outline:none;border-color:rgba(56,189,248,.55)}
+  .out{margin-top:18px}
+  .rowkv{display:flex;justify-content:space-between;gap:16px;padding:7px 0;border-bottom:1px solid rgba(120,160,220,.08);font-size:13.5px}
+  .rowkv:last-child{border-bottom:0}
+  .rowkv span:first-child{color:var(--dim);font-family:var(--mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase}
+  .rowkv span:last-child{font-family:var(--mono);color:#e2ecff}
+  .flag{font-family:var(--mono);font-size:12px;padding:7px 10px;border-radius:7px;margin-top:10px}
+  .flag.warn{background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.35);color:#fde68a}
+  .flag.ok{background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.3);color:#bbf7d0}
+  .mesh-wrap{position:relative;background:#060910;border:1px solid var(--line);border-radius:12px;height:340px;overflow:hidden}
+  #mesh{display:block;width:100%;height:100%}
+  .mesh-badge{position:absolute;left:12px;top:10px;font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--cy);background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.3);border-radius:999px;padding:3px 9px}
+  .mesh-cap{position:absolute;left:12px;bottom:10px;font-family:var(--mono);font-size:11px;color:var(--dim)}
+  table.kv{width:100%;border-collapse:collapse;font-size:13.5px}
+  table.kv td{padding:8px 0;border-bottom:1px solid rgba(120,160,220,.08);vertical-align:top}
+  table.kv td:first-child{color:var(--dim);font-family:var(--mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase;width:44%}
+  table.kv td:last-child{font-family:var(--mono);color:#e2ecff}
+  table.kv tr:last-child td{border-bottom:0}
+  .repo-line{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;font-size:13.5px;margin-top:14px;color:var(--dim)}
+  footer{border-top:1px solid var(--line);padding:22px 0 40px;font-family:var(--mono);font-size:12px;color:var(--dim);display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap}
+  @media (max-width:860px){
+    .grid2{grid-template-columns:1fr}
+    form.mm{grid-template-columns:repeat(2,1fr)}
+    .nav nav{display:none}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap nav">
+    <div class="mark">windtunnel <b>&middot; openfoam_case.py</b></div>
+    <nav>
+      <a href="#build">Build</a>
+      <a href="#case">Model</a>
+      <a href="#repo">Repository</a>
+      <a href="https://github.com/KeithBlackstock/windtunnel" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <h1>Wind tunnel case builder</h1>
+  <p class="lede">
+    This page produces the inputs that <code>openfoam_case.py</code> in
+    <a href="https://github.com/KeithBlackstock/windtunnel" target="_blank" rel="noopener">KeithBlackstock/windtunnel</a>
+    writes into an OpenFOAM case: the duct domain, the background cell size, the snappyHexMesh
+    refinement levels and the model placement that comes from <code>model_transformations.json</code>.
+    Change a value here, copy the emitted code into the repository, run the generator.
+  </p>
+
+  <div class="repo-line">
+    <span>Repository: <a href="https://github.com/KeithBlackstock/windtunnel" target="_blank" rel="noopener">github.com/KeithBlackstock/windtunnel</a></span>
+    <span class="mono">branch: main</span>
+    <span class="mono">generator: openfoam_case.py</span>
+  </div>
+
+  <section id="state">
+    <div class="grid2">
+      <div>
+        <div class="kicker">Current state of the pipeline</div>
+        <h2>What the repository runs today</h2>
+        <ul class="facts">
+          <li><b>Geometry export.</b> <code>export_stl()</code> places the model with the saved 4&times;4 transform and writes <code>case/constant/triSurface/model.stl</code>. It warns if the mesh leaves the duct.</li>
+          <li><b>Dictionaries.</b> <code>write_dicts()</code> emits <code>controlDict</code>, <code>blockMeshDict</code>, <code>snappyHexMeshDict</code> and <code>meshQualityDict</code> into <code>case/system/</code>.</li>
+          <li><b>Meshing.</b> <code>run_meshing()</code> runs <code>blockMesh -case case</code> then <code>snappyHexMesh -case case -overwrite</code>, producing <code>case/constant/polyMesh</code>.</li>
+          <li><b>Dependencies that bite.</b> <code>find_location_in_mesh()</code> calls <code>mesh.contains()</code> and <code>trimesh.proximity.closest_point()</code>. Both raise <code>ModuleNotFoundError</code> without <code>rtree</code>, and <code>closest_point()</code> also needs <code>scipy</code> for its KD-tree. numpy and trimesh alone are not enough.</li>
+          <li><b>locationInMesh</b> is picked automatically: the fluid candidate with the largest clearance to wall and model surface, ties going upstream.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <div class="hd">Requirements on the machine that runs it</div>
+        <table class="kv">
+          <tr><td>Python</td><td>3.9+ with numpy, trimesh, rtree, scipy</td></tr>
+          <tr><td>Placement gizmo</td><td>pyvista, only for <code>--reposition</code></td></tr>
+          <tr><td>Preview</td><td>plotly, only for <code>preview_model_in_domain()</code></td></tr>
+          <tr><td>Meshing</td><td>blockMesh, snappyHexMesh on PATH</td></tr>
+          <tr><td>Distribution</td><td>OpenFOAM, or blueCFD-Core on Windows</td></tr>
+          <tr><td>Output</td><td><code>case/</code> beside the script</td></tr>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="build">
+    <div class="kicker">01 / Parameters</div>
+    <h2>Build a case</h2>
+    <p>
+      Values are millimetres. The generator rounds the domain to whole background cells, so pick a
+      cell size that divides the duct exactly. Refinement level <i>N</i> gives a surface cell of
+      <i>background / 2<sup>N</sup></i>.
+    </p>
+
+    <div class="grid2" style="margin-top:18px">
+      <div class="panel">
+        <div class="hd">Duct and mesh</div>
+        <form class="mm" id="f">
+          <div><label>Duct X (mm)</label><input type="number" id="lx" value="100" min="10" step="1"></div>
+          <div><label>Duct Y (mm)</label><input type="number" id="ly" value="50" min="10" step="1"></div>
+          <div><label>Duct Z (mm)</label><input type="number" id="lz" value="50" min="10" step="1"></div>
+          <div><label>Background cell (mm)</label><input type="number" id="cell" value="5" min="0.5" step="0.5"></div>
+          <div><label>Refine min</label><input type="number" id="rmin" value="2" min="0" max="6" step="1"></div>
+          <div><label>Refine max</label><input type="number" id="rmax" value="3" min="0" max="8" step="1"></div>
+          <div><label>Place X (mm)</label><input type="number" id="px" value="40.7481" step="0.0001"></div>
+          <div><label>Place Y (mm)</label><input type="number" id="py" value="26.9389" step="0.0001"></div>
+          <div><label>Place Z (mm)</label><input type="number" id="pz" value="20.2105" step="0.0001"></div>
+        </form>
+        <div class="out" id="derived"></div>
+        <div id="flags"></div>
+      </div>
+
+      <div class="panel">
+        <div class="hd">Emitted constants</div>
+        <pre id="snip-const"></pre>
+        <div class="hd" style="margin-top:16px">model_transformations.json</div>
+        <pre id="snip-json"></pre>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:22px">
+      <div class="hd">Run sequence</div>
+      <button class="copy" data-for="snip-cmd">copy</button>
+      <pre id="snip-cmd"></pre>
+      <p class="dim" style="font-size:12.5px;margin:0">
+        <code>--reposition</code> reopens the placement gizmo (PyVista) and rewrites
+        <code>model_transformations.json</code>; the first run opens it too, when no placement file exists yet.
+        <code>STL_PATH</code> or <code>--stl PATH</code> supplies the model; without either the script asks for it,
+        through a Tk dialog, or stdin when there is no terminal.
+      </p>
+    </div>
+  </section>
+
+  <section id="case">
+    <div class="kicker">02 / Reference geometry</div>
+    <h2>Shipped model.stl</h2>
+    <p>
+      The article in the repository as <code>case/constant/triSurface/model.stl</code>, drawn from its own
+      triangles. Every figure below is read from that file.
+    </p>
+    <div class="grid2" style="margin-top:18px">
+      <div class="mesh-wrap">
+        <span class="mesh-badge">model.stl</span>
+        <canvas id="mesh" aria-label="Rotating wireframe of the repository STL"></canvas>
+        <div class="mesh-cap">binary STL &middot; 4,388 facets</div>
+      </div>
+      <div class="panel">
+        <div class="hd">Measured from model.stl</div>
+        <table class="kv">
+          <tr><td>Facets</td><td>4,388 triangles</td></tr>
+          <tr><td>File size</td><td>219,484 bytes</td></tr>
+          <tr><td>Bounds</td><td>x 32.79&ndash;67.38 &middot; y 6.92&ndash;43.08 &middot; z 21.89&ndash;26.95 mm</td></tr>
+          <tr><td>Placement</td><td>+40.7481 / +26.9389 / +20.2105 mm</td></tr>
+          <tr><td>Duct</td><td>100 &times; 50 &times; 50 mm</td></tr>
+          <tr><td>Background</td><td>5 mm &rarr; 20 &times; 10 &times; 10 = 2,000 hex</td></tr>
+          <tr><td>Refinement</td><td>level 2 to 3 &rarr; 1.25 to 0.625 mm surface cell</td></tr>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="repo">
+    <div class="kicker">03 / Repository</div>
+    <h2>What is in the tree</h2>
+    <div class="grid2">
+      <div class="panel">
+        <div class="hd">Files that drive the case</div>
+        <pre><span class="c"># meshing pipeline</span>
+openfoam_case.py        <span class="c"># exports STL, writes dicts, runs meshers</span>
+fluid_volume_model.py   <span class="c"># placement + STL loading</span>
+model_transformations.json  <span class="c"># saved 4x4 transform</span>
+
+<span class="c"># case</span>
+case/constant/triSurface/model.stl
+case/system/{controlDict,blockMeshDict,snappyHexMeshDict,meshQualityDict}</pre>
+      </div>
+      <div class="panel">
+        <div class="hd">Clone and first run</div>
+        <button class="copy" data-for="snip-clone">copy</button>
+        <pre id="snip-clone">git clone https://github.com/KeithBlackstock/windtunnel.git
+cd windtunnel
+python -m pip install numpy trimesh rtree scipy
+python openfoam_case.py --stl /path/to/model.stl
+blockMesh -case case
+snappyHexMesh -case case -overwrite</pre>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="wrap">
+  <footer>
+    <div>source: <a href="https://github.com/KeithBlackstock/windtunnel" target="_blank" rel="noopener">github.com/KeithBlackstock/windtunnel</a></div>
+    <div class="mono">openfoam_case.py &middot; fluid_volume_model.py</div>
+  </footer>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var $ = function(id){ return document.getElementById(id); };
+
+  function num(id){ var v = parseFloat($(id).value); return isFinite(v) ? v : 0; }
+  function fmt(v, d){ return v.toLocaleString(undefined, {minimumFractionDigits: (d||0), maximumFractionDigits: (d||0)}); }
+
+  function build(){
+    var lx = num('lx'), ly = num('ly'), lz = num('lz');
+    var cell = num('cell') || 5;
+    var rmin = Math.max(0, Math.round(num('rmin')));
+    var rmax = Math.max(rmin, Math.round(num('rmax')));
+    var px = num('px'), py = num('py'), pz = num('pz');
+
+    var nx = Math.max(1, Math.round(lx / cell));
+    var ny = Math.max(1, Math.round(ly / cell));
+    var nz = Math.max(1, Math.round(lz / cell));
+    var hex = nx * ny * nz;
+
+    var smin = cell / Math.pow(2, rmin);
+    var smax = cell / Math.pow(2, rmax);
+
+    $('derived').innerHTML =
+      row('background cells', nx + ' x ' + ny + ' x ' + nz) +
+      row('hex cells in blockMesh', fmt(hex)) +
+      row('actual cell size', (lx/nx).toFixed(3) + ' x ' + (ly/ny).toFixed(3) + ' x ' + (lz/nz).toFixed(3) + ' mm') +
+      row('surface cell level ' + rmin, smin.toFixed(4) + ' mm') +
+      row('surface cell level ' + rmax, smax.toFixed(4) + ' mm') +
+      row('domain', (lx/1000).toFixed(4) + ' x ' + (ly/1000).toFixed(4) + ' x ' + (lz/1000).toFixed(4) + ' m');
+
+    // domain divisibility
+    var bad = [['X', lx], ['Y', ly], ['Z', lz]].filter(function(p){
+      var r = p[1] / cell;
+      return Math.abs(r - Math.round(r)) > 0.02;
+    });
+    var flags = '';
+    if (bad.length){
+      flags += '<div class="flag warn">Duct ' + bad.map(function(p){
+        return p[0] + ' = ' + (p[1]/cell).toFixed(2) + ' cells';
+      }).join(', ') + '. The generator rounds, so the mesh will not match the duct exactly. Use a cell size that divides it.</div>';
+    } else {
+      flags += '<div class="flag ok">Cell size divides the duct exactly in all three axes.</div>';
+    }
+
+    // does the model fit, given its measured bounds and this translation
+    var ext = [34.6, 36.2, 5.1];
+    var minB = [32.79, 6.92, 21.89], maxB = [67.38, 43.08, 26.95];
+    var base = [40.7481, 26.9389, 20.2105];
+    var dom = [lx, ly, lz];
+    var out = [];
+    ['x','y','z'].forEach(function(ax, i){
+      var d = base[i] - (i === 0 ? px : i === 1 ? py : pz); // move bounds by delta
+      var lo = minB[i] - d, hi = maxB[i] - d;
+      if (lo < 0 || hi > dom[i]) out.push(ax + ' ' + lo.toFixed(1) + '..' + hi.toFixed(1) + ' of ' + dom[i]);
+    });
+    if (out.length){
+      flags += '<div class="flag warn">Model leaves the duct on ' + out.join('; ') + ' mm. The generator will warn and snappyHexMesh will clip it.</div>';
+    } else {
+      flags += '<div class="flag ok">Model sits fully inside the duct at this placement.</div>';
+    }
+    $('flags').innerHTML = flags;
+
+    $('snip-const').textContent =
+      'Lx, Ly, Lz = ' + (lx/1000).toFixed(4) + ', ' + (ly/1000).toFixed(4) + ', ' + (lz/1000).toFixed(4) + '   # m\n' +
+      'BACKGROUND_CELL_SIZE = ' + (cell/1000).toFixed(4) + '   # m\n' +
+      'REFINEMENT_LEVEL_MIN = ' + rmin + '\n' +
+      'REFINEMENT_LEVEL_MAX = ' + rmax + '\n';
+
+    var m = {
+      matrix: [
+        [1.0, 0.0, 0.0, +(px/1000).toFixed(12)],
+        [0.0, 1.0, 0.0, +(py/1000).toFixed(12)],
+        [0.0, 0.0, 1.0, +(pz/1000).toFixed(12)],
+        [0.0, 0.0, 0.0, 1.0]
+      ]
+    };
+    $('snip-json').textContent = JSON.stringify(m, null, 2);
+
+    $('snip-cmd').textContent =
+      'python openfoam_case.py --stl /path/to/model.stl\n' +
+      'blockMesh -case case\n' +
+      'snappyHexMesh -case case -overwrite\n\n' +
+      '# case/system/ will hold:\n' +
+      '#   controlDict        application snappyHexMesh\n' +
+      '#   blockMeshDict      hex (' + nx + ' ' + ny + ' ' + nz + ') simpleGrading (1 1 1)\n' +
+      '#   snappyHexMeshDict  level (' + rmin + ' ' + rmax + '), model.stl\n' +
+      '#   meshQualityDict    maxNonOrtho 65, maxSkewness 4\n' +
+      '# expected background mesh: ' + fmt(hex) + ' hex cells';
+  }
+
+  function row(k, v){
+    return '<div class="rowkv"><span>' + k + '</span><span>' + v + '</span></div>';
+  }
+
+  ['lx','ly','lz','cell','rmin','rmax','px','py','pz'].forEach(function(id){
+    var el = $(id);
+    if (el) el.addEventListener('input', build);
+  });
+  build();
+
+  document.querySelectorAll('.copy').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var src = $(btn.getAttribute('data-for'));
+      if (!src) return;
+      var text = src.textContent;
+      var done = function(){ btn.textContent = 'copied'; setTimeout(function(){ btn.textContent = 'copy'; }, 1400); };
+      if (navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(done, done);
+      } else {
+        var ta = document.createElement('textarea');
+        ta.value = text; document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); } catch(e){}
+        document.body.removeChild(ta); done();
+      }
+    });
+  });
+
+  /* rotating wireframe of the repository STL */
+  (function(){
+    var mc = $('mesh');
+    if (!mc) return;
+    var cx = mc.getContext('2d');
+    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var tris = null, MW = 0, MH = 0, angle = 0.6;
+
+    function size(){
+      var dpr = Math.min(window.devicePixelRatio || 1, 2);
+      var box = mc.parentElement;
+      MW = box.clientWidth || 560; MH = box.clientHeight || 340;
+      mc.width = Math.round(MW * dpr); mc.height = Math.round(MH * dpr);
+      cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    function project(x, y, z, ay, ax, scale){
+      var cy = Math.cos(ay), sy = Math.sin(ay);
+      var x1 = x*cy - z*sy, z1 = x*sy + z*cy;
+      var cxx = Math.cos(ax), sxx = Math.sin(ax);
+      var y1 = y*cxx - z1*sxx, z2 = y*sxx + z1*cxx;
+      var persp = 1 / (1.75 - z2 * 0.42);
+      return [MW/2 + x1*scale*persp, MH/2 - y1*scale*persp, z2];
+    }
+    function draw(){
+      cx.clearRect(0, 0, MW, MH);
+      if (!tris || !tris.length){
+        cx.strokeStyle = 'rgba(56,189,248,.25)'; cx.lineWidth = 1;
+        cx.strokeRect(MW*0.2, MH*0.28, MW*0.6, MH*0.44);
+        return;
+      }
+      var scale = Math.min(MW, MH) * 0.95;
+      var ax = -0.42, ay = angle, n = tris.length, items = new Array(n), i;
+      for (i = 0; i < n; i++){
+        var t = tris[i];
+        var a = project(t[0], t[1], t[2], ay, ax, scale);
+        var b = project(t[3], t[4], t[5], ay, ax, scale);
+        var c = project(t[6], t[7], t[8], ay, ax, scale);
+        items[i] = {a: a, b: b, c: c, z: (a[2]+b[2]+c[2])/3};
+      }
+      items.sort(function(p, q){ return p.z - q.z; });
+      for (i = 0; i < n; i++){
+        var o = items[i], d = Math.min(Math.max((o.z + 0.75) / 1.5, 0), 1);
+        cx.beginPath();
+        cx.moveTo(o.a[0], o.a[1]); cx.lineTo(o.b[0], o.b[1]); cx.lineTo(o.c[0], o.c[1]);
+        cx.closePath();
+        cx.fillStyle = 'rgba(' + Math.round(16 + 40*d) + ',' + Math.round(70 + 105*d) + ',' + Math.round(145 + 80*d) + ',0.32)';
+        cx.fill();
+        cx.strokeStyle = 'rgba(56,189,248,' + (0.12 + 0.5*d).toFixed(3) + ')';
+        cx.lineWidth = 0.55;
+        cx.stroke();
+      }
+    }
+    function loop(){ angle += 0.0055; draw(); if (!reduce) requestAnimationFrame(loop); }
+
+    size();
+    fetch('model_mesh.json', {cache: 'no-store'})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if (d && d.tris && d.tris.length) tris = d.tris;
+        size(); if (reduce) draw(); else requestAnimationFrame(loop);
+      })
+      .catch(function(){ draw(); });
+
+    var rz;
+    addEventListener('resize', function(){
+      clearTimeout(rz); rz = setTimeout(function(){ size(); draw(); }, 150);
+    });
+  })();
+})();
+</script>
+</body>
+</html>
