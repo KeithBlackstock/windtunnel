@@ -3,10 +3,17 @@ OpenFOAM case generator for the wind tunnel.
 
 Reuses fluid_volume_model.py for geometry placement (saved in
 model_transformations.json; pass --reposition to reopen the gizmo).
-Run this script to prepare an OpenFOAM case directory, then call:
 
-    blockMesh -case case
-    snappyHexMesh -case case -overwrite
+Generates a complete incompressible RANS case (simpleFoam, k-omega SST,
+air at INLET_VELOCITY m/s) targeting OpenFOAM 11 (Foundation line), then
+optionally meshes and solves:
+
+    python openfoam_case.py --stl model.stl   # write case, then mesh
+    python openfoam_case.py --dicts-only      # write the case only
+    python openfoam_case.py --solve           # also run simpleFoam after meshing
+
+Meshing/solving call blockMesh, snappyHexMesh and simpleFoam from PATH
+(blueCFD-Core on Windows, or the pinned container image in CI).
 """
 
 from pathlib import Path
@@ -30,9 +37,27 @@ BACKGROUND_CELL_SIZE = 0.005  # m
 REFINEMENT_LEVEL_MIN = 2
 REFINEMENT_LEVEL_MAX = 3
 
+# ── Flow conditions (incompressible RANS: simpleFoam + k-omega SST) ───────────
+INLET_VELOCITY = 10.0   # m/s, in +x
+NU = 1.5e-5             # kinematic viscosity of air (~20 °C) [m²/s]
+RHO_INF = 1.225         # scales reported forces only; the solve is incompressible [kg/m³]
+END_TIME = 1500         # SIMPLE iterations
+WRITE_INTERVAL = 250    # field write cadence [iterations]
+
+# Inlet turbulence from standard duct correlations:
+#   I = 0.16 Re_Dh^(-1/8)          (fully-developed duct flow)
+#   k = 1.5 (U I)^2
+#   omega = sqrt(k) / (Cmu^0.25 * l),  l = 0.07 Dh
+HYDRAULIC_DIAMETER = 2 * Ly * Lz / (Ly + Lz)   # 0.05 m for the default duct
+TURBULENT_INTENSITY = 0.16 * (INLET_VELOCITY * HYDRAULIC_DIAMETER / NU) ** -0.125
+K_INLET = 1.5 * (INLET_VELOCITY * TURBULENT_INTENSITY) ** 2
+OMEGA_INLET = K_INLET ** 0.5 / (0.09 ** 0.25 * 0.07 * HYDRAULIC_DIAMETER)
+
 CASE_DIR = Path(__file__).parent / "case"
 STL_OUT  = CASE_DIR / "constant" / "triSurface" / "model.stl"
 SYS_DIR  = CASE_DIR / "system"
+CONST_DIR   = CASE_DIR / "constant"
+FIELD_DIR   = CASE_DIR / "0"
 
 
 # ── OpenFOAM file header ──────────────────────────────────────────────────────
@@ -121,29 +146,60 @@ def find_location_in_mesh(mesh):
 
 
 # ── Step 2: write OpenFOAM dictionaries ───────────────────────────────────────
-def write_dicts(location_in_mesh):
+def write_dicts(location_in_mesh, mesh=None):
     SYS_DIR.mkdir(parents=True, exist_ok=True)
-    _write_control_dict()
+    CONST_DIR.mkdir(parents=True, exist_ok=True)
+    FIELD_DIR.mkdir(parents=True, exist_ok=True)
+    ref = _reference_quantities(mesh)
+    _write_control_dict(ref)
     _write_block_mesh_dict()
     _write_snappy_hex_mesh_dict(location_in_mesh)
     _write_mesh_quality_dict()
-    print(f"Wrote dictionaries  →  {SYS_DIR}")
-    print("  controlDict, blockMeshDict, snappyHexMeshDict, meshQualityDict")
+    _write_fv_schemes()
+    _write_fv_solution()
+    _write_transport_properties()
+    _write_turbulence_properties()
+    _write_initial_fields()
+    print(f"Wrote dictionaries  →  {CASE_DIR}")
+    print("  system:   controlDict, blockMeshDict, snappyHexMeshDict,"
+          " meshQualityDict, fvSchemes, fvSolution")
+    print("  constant: transportProperties, turbulenceProperties")
+    print("  0/:       U, p, k, omega, nut")
+    print(f"  inlet: U = {INLET_VELOCITY} m/s, I = {TURBULENT_INTENSITY:.3f},"
+          f" k = {K_INLET:.4g} m²/s², omega = {OMEGA_INLET:.4g} 1/s")
+    print(f"  reference: lRef = {ref[0]:.4g} m, Aref = {ref[1]:.4g} m²")
 
 
-def _write_control_dict():
-    content = _foam_header("dictionary", "controlDict") + textwrap.dedent("""\
+def _reference_quantities(mesh):
+    """lRef, Aref, CofR for the forceCoeffs function object.
 
-        application     snappyHexMesh;
+    lRef = streamwise (x) extent, Aref = x-extent × z-extent, CofR = bounding-box
+    centre. With mesh=None, falls back to the bounds of the shipped model.stl.
+    """
+    if mesh is None:
+        lo = np.array([0.03279, 0.00692, 0.02189])   # shipped model.stl bounds [m]
+        hi = np.array([0.06738, 0.04308, 0.02695])
+    else:
+        lo, hi = np.asarray(mesh.bounds, dtype=float)
+    chord = hi[0] - lo[0]
+    span = hi[2] - lo[2]
+    return chord, chord * span, tuple(0.5 * (lo + hi))
+
+
+def _write_control_dict(ref):
+    l_ref, a_ref, (cx, cy, cz) = ref
+    content = _foam_header("dictionary", "controlDict") + textwrap.dedent(f"""\
+
+        application     simpleFoam;
 
         startFrom       startTime;
         startTime       0;
         stopAt          endTime;
-        endTime         1;
+        endTime         {END_TIME};
         deltaT          1;
 
         writeControl    timeStep;
-        writeInterval   1;
+        writeInterval   {WRITE_INTERVAL};
         purgeWrite      0;
         writeFormat     ascii;
         writePrecision  6;
@@ -151,6 +207,39 @@ def _write_control_dict():
         timeFormat      general;
         timePrecision   6;
         runTimeModifiable true;
+
+        functions
+        {{
+            forces
+            {{
+                type            forces;
+                libs            ("libforces.so");
+                writeControl    timeStep;
+                writeInterval   50;
+                patches         (model);
+                rho             rhoInf;
+                rhoInf          {RHO_INF};
+                CofR            ({cx:.6g} {cy:.6g} {cz:.6g});
+            }}
+
+            coefficients
+            {{
+                type            forceCoeffs;
+                libs            ("libforces.so");
+                writeControl    timeStep;
+                writeInterval   50;
+                patches         (model);
+                rho             rhoInf;
+                rhoInf          {RHO_INF};
+                liftDir         (0 1 0);
+                dragDir         (1 0 0);
+                pitchAxis       (0 0 1);
+                magUInf         {INLET_VELOCITY};
+                lRef            {l_ref:.6g};
+                Aref            {a_ref:.6g};
+                CofR            ({cx:.6g} {cy:.6g} {cz:.6g});
+            }}
+        }}
         """)
     (SYS_DIR / "controlDict").write_text(content)
 
@@ -338,11 +427,187 @@ def _write_mesh_quality_dict():
     (SYS_DIR / "meshQualityDict").write_text(content)
 
 
-# ── Step 3: run blockMesh + snappyHexMesh (blueCFD-Core) ──────────────────────
+# Solver-side dictionaries.  Note for ESI-line images (v2212+): their
+# snappyHexMesh also requires fvSchemes/fvSolution to exist before meshing, so
+# emitting them here keeps the case runnable on both OpenFOAM lines.
+def _write_fv_schemes():
+    content = _foam_header("dictionary", "fvSchemes") + textwrap.dedent("""\
+
+        ddtSchemes
+        {
+            default         steadyState;
+        }
+
+        gradSchemes
+        {
+            default         Gauss linear;
+            grad(U)         cellLimited Gauss linear 1;
+        }
+
+        divSchemes
+        {
+            default         none;
+            div(phi,U)      bounded Gauss linearUpwind grad(U);
+            div(phi,k)      bounded Gauss upwind;
+            div(phi,omega)  bounded Gauss upwind;
+            div((nuEff*dev2(T(grad(U))))) Gauss linear;
+        }
+
+        laplacianSchemes
+        {
+            default         Gauss linear corrected;
+        }
+
+        interpolationSchemes
+        {
+            default         linear;
+        }
+
+        snGradSchemes
+        {
+            default         corrected;
+        }
+
+        wallDist
+        {
+            method          meshWave;
+        }
+        """)
+    (SYS_DIR / "fvSchemes").write_text(content)
+
+
+def _write_fv_solution():
+    content = _foam_header("dictionary", "fvSolution") + textwrap.dedent("""\
+
+        solvers
+        {
+            p
+            {
+                solver          GAMG;
+                tolerance       1e-7;
+                relTol          0.01;
+                smoother        GaussSeidel;
+            }
+
+            "(U|k|omega)"
+            {
+                solver          smoothSolver;
+                smoother        symGaussSeidel;
+                tolerance       1e-8;
+                relTol          0.1;
+            }
+        }
+
+        SIMPLE
+        {
+            nNonOrthogonalCorrectors 1;
+            consistent      yes;
+
+            residualControl
+            {
+                p               1e-4;
+                U               1e-5;
+                "(k|omega)"     1e-5;
+            }
+        }
+
+        relaxationFactors
+        {
+            equations
+            {
+                U               0.7;
+                k               0.7;
+                omega           0.7;
+            }
+        }
+        """)
+    (SYS_DIR / "fvSolution").write_text(content)
+
+
+def _write_transport_properties():
+    content = _foam_header("dictionary", "transportProperties") + textwrap.dedent(f"""\
+
+        transportModel  Newtonian;
+        nu              [0 2 -1 0 0 0 0] {NU};
+        """)
+    (CONST_DIR / "transportProperties").write_text(content)
+
+
+def _write_turbulence_properties():
+    # OpenFOAM 11 name/format; OpenFOAM 12 renamed this file to
+    # constant/momentumTransport with keyword "model" instead of "RASModel".
+    content = _foam_header("dictionary", "turbulenceProperties") + textwrap.dedent("""\
+
+        simulationType  RAS;
+
+        RAS
+        {
+            RASModel        kOmegaSST;
+            turbulence      on;
+            printCoeffs     on;
+        }
+        """)
+    (CONST_DIR / "turbulenceProperties").write_text(content)
+
+
+# ── 0/ initial fields ─────────────────────────────────────────────────────────
+def _write_field(name, foam_class, dims, internal, boundaries):
+    """Write a 0/ field file. boundaries: [(patch, [body lines]), ...]."""
+    body = [f"dimensions      [{dims}];", f"internalField   {internal};", "",
+            "boundaryField", "{"]
+    for patch, spec in boundaries:
+        body.append(f"    {patch}")
+        body.append("    {")
+        body.extend(f"        {line}" for line in spec)
+        body.append("    }")
+    body.append("}")
+    (FIELD_DIR / name).write_text(
+        _foam_header(foam_class, name) + "\n".join(body) + "\n")
+
+
+def _write_initial_fields():
+    u = f"uniform ({INLET_VELOCITY:.6g} 0 0)"
+    k = f"uniform {K_INLET:.6g}"
+    w = f"uniform {OMEGA_INLET:.6g}"
+
+    _write_field("U", "volVectorField", "0 1 -1 0 0 0 0", u, [
+        ("inlet",  ["type fixedValue;", f"value {u};"]),
+        ("outlet", ["type inletOutlet;", "inletValue uniform (0 0 0);", f"value {u};"]),
+        ("walls",  ["type noSlip;"]),
+        ("model",  ["type noSlip;"]),
+    ])
+    # Kinematic pressure (m²/s²), as used by OpenFOAM 11 incompressible solvers.
+    _write_field("p", "volScalarField", "0 2 -2 0 0 0 0", "uniform 0", [
+        ("inlet",  ["type zeroGradient;"]),
+        ("outlet", ["type fixedValue;", "value uniform 0;"]),
+        ("walls",  ["type zeroGradient;"]),
+        ("model",  ["type zeroGradient;"]),
+    ])
+    _write_field("k", "volScalarField", "0 2 -2 0 0 0 0", k, [
+        ("inlet",  ["type fixedValue;", f"value {k};"]),
+        ("outlet", ["type inletOutlet;", f"inletValue {k};", f"value {k};"]),
+        ("walls",  ["type kqRWallFunction;", f"value {k};"]),
+        ("model",  ["type kqRWallFunction;", f"value {k};"]),
+    ])
+    _write_field("omega", "volScalarField", "0 0 -1 0 0 0 0", w, [
+        ("inlet",  ["type fixedValue;", f"value {w};"]),
+        ("outlet", ["type inletOutlet;", f"inletValue {w};", f"value {w};"]),
+        ("walls",  ["type omegaWallFunction;", f"value {w};"]),
+        ("model",  ["type omegaWallFunction;", f"value {w};"]),
+    ])
+    _write_field("nut", "volScalarField", "0 2 -1 0 0 0 0", "uniform 0", [
+        ("inlet",  ["type calculated;", "value uniform 0;"]),
+        ("outlet", ["type calculated;", "value uniform 0;"]),
+        ("walls",  ["type nutkWallFunction;", "value uniform 0;"]),
+        ("model",  ["type nutkWallFunction;", "value uniform 0;"]),
+    ])
+
+
+# ── Step 3: run blockMesh + snappyHexMesh ─────────────────────────────────────
 def run_meshing():
     """
-    Call blockMesh then snappyHexMesh using blueCFD-Core's native Windows
-    executables, which are expected to be on PATH after installing blueCFD-Core.
+    Call blockMesh then snappyHexMesh; the executables must be on PATH
+    (blueCFD-Core on Windows, or the pinned OpenFOAM container image).
     """
     case = str(CASE_DIR)
 
@@ -356,10 +621,22 @@ def run_meshing():
     print(f"Meshing complete  →  {poly_mesh}")
 
 
+# ── Step 4: run simpleFoam ────────────────────────────────────────────────────
+def run_solve():
+    """Steady incompressible RANS; residuals go to the log, forces to postProcessing/."""
+    print("Running simpleFoam …")
+    subprocess.run(["simpleFoam", "-case", str(CASE_DIR)], check=True)
+    print(f"Solving complete  →  {CASE_DIR / 'postProcessing'}")
+
+
 if __name__ == "__main__":
     import sys
     argv = sys.argv[1:]
     stl = argv[argv.index("--stl") + 1] if "--stl" in argv else None
     mesh = export_stl(stl_path=stl, reposition="--reposition" in argv)
-    write_dicts(find_location_in_mesh(mesh))
+    write_dicts(find_location_in_mesh(mesh), mesh)
+    if "--dicts-only" in argv:
+        raise SystemExit(0)
     run_meshing()
+    if "--solve" in argv:
+        run_solve()

@@ -1,2 +1,10 @@
 __pycache__/
 *.py[cod]
+
+# Generated OpenFOAM case content (regenerate with openfoam_case.py)
+case/system/
+case/0/
+case/constant/polyMesh/
+case/constant/transportProperties
+case/constant/turbulenceProperties
+case/postProcessing/
