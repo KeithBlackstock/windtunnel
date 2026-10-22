@@ -11,6 +11,7 @@ optionally meshes and solves:
     python openfoam_case.py --stl model.stl   # write case, then mesh
     python openfoam_case.py --dicts-only      # write the case only
     python openfoam_case.py --solve           # also run simpleFoam after meshing
+    python openfoam_case.py --placed-stl      # use case/.../model.stl as-is (already placed)
 
 Meshing/solving call blockMesh, snappyHexMesh and simpleFoam from PATH
 (blueCFD-Core on Windows, or the pinned container image in CI).
@@ -75,7 +76,15 @@ def _foam_header(foam_class, object_name):
 
 
 # ── Step 1: export STL ────────────────────────────────────────────────────────
-def export_stl(stl_path=None, reposition=False):
+def export_stl(stl_path=None, reposition=False, placed=False):
+    if placed:
+        # The shipped model.stl is already positioned; re-running placement on it
+        # would re-centre and shift it, so load it untouched (used by CI).
+        import trimesh
+        mesh = trimesh.load(str(STL_OUT), force="mesh")
+        print(f"Using placed STL  →  {STL_OUT}")
+        return _report_bounds(mesh)
+
     if stl_path is None:
         stl_path = os.environ.get("STL_PATH") or prompt_for_stl_path()
     if stl_path is None:
@@ -86,7 +95,10 @@ def export_stl(stl_path=None, reposition=False):
 
     STL_OUT.parent.mkdir(parents=True, exist_ok=True)
     mesh.export(str(STL_OUT))
+    return _report_bounds(mesh)
 
+
+def _report_bounds(mesh):
     bounds = np.array(mesh.bounds)
     print(f"Exported STL  →  {STL_OUT}")
     print(f"  bounds x: [{bounds[0,0]:.4f}, {bounds[1,0]:.4f}] m")
@@ -633,7 +645,8 @@ if __name__ == "__main__":
     import sys
     argv = sys.argv[1:]
     stl = argv[argv.index("--stl") + 1] if "--stl" in argv else None
-    mesh = export_stl(stl_path=stl, reposition="--reposition" in argv)
+    mesh = export_stl(stl_path=stl, reposition="--reposition" in argv,
+                      placed="--placed-stl" in argv)
     write_dicts(find_location_in_mesh(mesh), mesh)
     if "--dicts-only" in argv:
         raise SystemExit(0)

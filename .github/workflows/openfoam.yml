@@ -1,0 +1,87 @@
+name: OpenFOAM run
+
+on:
+  workflow_dispatch:
+    inputs:
+      solve:
+        description: Run simpleFoam after meshing (off = mesh and checkMesh only)
+        type: boolean
+        default: true
+
+permissions:
+  contents: write   # publishes docs/results.json
+
+concurrency:
+  group: openfoam
+  cancel-in-progress: false
+
+env:
+  # Foundation OpenFOAM 11, matching the dictionaries openfoam_case.py writes.
+  OPENFOAM_IMAGE: openfoam/openfoam11-paraview510:latest
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Generate case dictionaries
+        run: |
+          pip install numpy trimesh rtree scipy
+          python openfoam_case.py --placed-stl --dicts-only
+
+      - name: Pull OpenFOAM image
+        run: docker pull "$OPENFOAM_IMAGE"
+
+      - name: Mesh and solve
+        env:
+          SOLVE: ${{ inputs.solve }}
+        run: |
+          cat > "$RUNNER_TEMP/run.sh" <<'EOF'
+          set -eo pipefail
+          source /opt/openfoam11/etc/bashrc
+          cd /work/case
+          blockMesh        > log.blockMesh
+          snappyHexMesh -overwrite > log.snappyHexMesh
+          checkMesh        > log.checkMesh
+          if [ "$SOLVE" = "true" ]; then
+            simpleFoam     > log.simpleFoam
+          fi
+          EOF
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e SOLVE \
+            -v "$GITHUB_WORKSPACE:/work" -v "$RUNNER_TEMP/run.sh:/run.sh:ro" \
+            "$OPENFOAM_IMAGE" bash /run.sh
+
+      - name: Summarise
+        if: ${{ !cancelled() }}
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python tools/summarize_run.py
+
+      - name: Upload case output
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: openfoam-case
+          path: |
+            case/log.*
+            case/postProcessing
+            case/[1-9]*
+            case/constant/polyMesh
+            case/system
+          if-no-files-found: warn
+
+      - name: Publish results.json
+        if: ${{ !cancelled() }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/results.json
+          git commit -m "Update OpenFOAM results from run ${{ github.run_id }}" || exit 0
+          git pull --rebase origin "${{ github.ref_name }}"
+          git push origin "HEAD:${{ github.ref_name }}"
