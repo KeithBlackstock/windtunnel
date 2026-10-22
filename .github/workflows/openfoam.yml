@@ -53,9 +53,10 @@ jobs:
             simpleFoam     > log.simpleFoam
           fi
           EOF
-          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e SOLVE \
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e SOLVE --entrypoint /bin/bash \
             -v "$GITHUB_WORKSPACE:/work" -v "$RUNNER_TEMP/run.sh:/run.sh:ro" \
-            "$OPENFOAM_IMAGE" bash /run.sh
+            "$OPENFOAM_IMAGE" /run.sh
+          test -s case/log.checkMesh  # the image entrypoint can swallow the script
 
       - name: Summarise
         if: ${{ !cancelled() }}
