@@ -43,8 +43,10 @@ jobs:
           SOLVE: ${{ inputs.solve }}
         run: |
           cat > "$RUNNER_TEMP/run.sh" <<'EOF'
-          set -eo pipefail
+          # OpenFOAM's bashrc returns non-zero internally, so source it before set -e
           source /opt/openfoam11/etc/bashrc
+          set -eo pipefail
+          which blockMesh
           cd /work/case
           blockMesh        > log.blockMesh
           snappyHexMesh -overwrite > log.snappyHexMesh
